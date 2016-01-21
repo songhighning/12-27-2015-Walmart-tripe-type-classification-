@@ -1,0 +1,179 @@
+---
+title: "Walmart trip type classification exploratory analysis"
+author: "Alex Ding"
+date: "December 13, 2015"
+output: html_document
+---
+
+#Alex's Script on
+#Warlmart trip type classification
+#Date: 2015 12 13
+
+Read in the data:
+```{r}
+rm(list=ls())
+gc()
+library(data.table)
+library(zoo)
+library(reshape)
+setwd("C:/Users/Alex/Desktop/cs/Kaggle/12 27 2015 Walmart tripe type classification/data/")
+set.seed(616)
+train <- read.csv("train.csv" )
+test  <- read.csv("test.csv")
+#add an indicator to show whether being purchased or returned
+train$Purchase_Ind <- "Purchase"
+train[which(train$ScanCount<0),'Purchase_Ind'] <- "Return"
+test$Purchase_Ind <- "Purchase"
+test[which(test$ScanCount<0),'Purchase_Ind'] <- "Return"
+dt.train <- data.table(train)
+dt.test <- data.table(test)
+
+```
+
+let's have a first look at the data
+
+```{r}
+str(train)
+unique(train$TripType)
+str(test)
+```
+
+NA per column
+
+```{r}
+sapply(train,function(x) sum(is.na(x)))
+apply(is.na(test),2,sum)
+```
+
+Unique values per column
+38 types of trip type
+69 department in train, 68 department in test
+5196 unique FinelineNumber in train
+5204 unique FinelineNumber in test
+```{r}
+sapply(train,function(x) length(unique(x)))
+sapply(test,function(x) length(unique(x)))
+```
+
+
+all department description are in the training set
+only 5046 FineLineNumber exist in the test set
+```{r}
+sum(unique(test$DepartmentDescription) %in% unique(train$DepartmentDescription))
+sum(unique(test$FinelineNumber) %in% unique(train$FinelineNumber))
+```
+
+
+train has 97714 unique products.
+test has 98147 unique products.
+there are 71168 Upc codes that are both in train and test
+
+note: when training the model, maybe it is a good idea to transform all 
+UPC codes that are 0 or not in the train set to 0, since it has never been seen before
+
+```{r}
+length(unique(train[which(!is.na(train$Upc)),]$Upc))
+length(unique(test[which(!is.na(test$Upc)),]$Upc))
+
+sum(unique(test[which(!is.na(test$Upc)),]$Upc) %in% unique(train[which(!is.na(train$Upc)),]$Upc))
+```
+
+upc definition
+
+first 6 digits are manufacturer code, next 5 digits are item number
+last digit is a check digit
+
+department product count by its purchase, return and return/Purchase ratio
+The top 5 return/purchase ratio is:
+```{r}
+xnam = c("DepartmentDescription","Purchase_Ind")
+a = data.frame(table(train[xnam]))
+a = cast(a,DepartmentDescription~Purchase_Ind)
+a = a[with(a, order(-Purchase)), ]
+
+Calculate_Purchase_Return_ratio <- function(in_data){
+  in_data['Return'] <- abs(in_data['Return'])
+  in_data['RPratioBps']<- in_data['Return']/in_data['Purchase']* 1000
+  return (in_data)
+}
+
+a = Calculate_Purchase_Return_ratio(a)
+head(a,15)
+```
+
+department product count by its purchase and return in test
+```{r}
+xnam = c("DepartmentDescription","Purchase_Ind")
+b = data.frame(table(test[xnam]))
+b = cast(b,DepartmentDescription~Purchase_Ind)
+b = b[with(b, order(-Purchase)), ]
+b = Calculate_Purchase_Return_ratio(b)
+head(b,15)
+```
+
+
+
+Let's do the same summary by the Quantities(ScanCOunt) sold 
+```{r}
+xnam = c("ScanCount","DepartmentDescription","Purchase_Ind")
+d<-aggregate(ScanCount ~ ., data=train[, xnam], FUN=sum,order('ScantCount'))
+d = cast(d,DepartmentDescription~Purchase_Ind)
+d = d[with(d, order(-Purchase)), ]
+d[is.na(d)] <- 0
+d = Calculate_Purchase_Return_ratio(d)
+head(d,15)
+
+xnam = c("ScanCount","DepartmentDescription","Purchase_Ind")
+e<-aggregate(ScanCount ~ ., data=test[, xnam], FUN=sum,order('ScantCount'))
+e = cast(e,DepartmentDescription~Purchase_Ind)
+e = e[with(e, order(-Purchase)), ]
+e[is.na(e)] <-0
+e = Calculate_Purchase_Return_ratio(e)
+head(e,15)
+```
+
+
+
+health and beauty aids products only occure in train, so we can ignore them in our model building
+Concept stores, Other department products only get get returned in the test set
+```{r}
+dt.train <- data.table(train)
+ScanCount_by_Visit_DepartmentDescription<-dt.train[,Quantity:=sum(ScanCount),by=list(VisitNumber,DepartmentDescription)]
+ScanCount_by_Visit_DepartmentDescription = dcast(ScanCount_by_Visit_DepartmentDescription,VisitNumber~DepartmentDescription+Purchase_Ind)
+
+dt.test <- data.table(test)
+ScanCount_by_Visit_DepartmentDescription_test<-dt.test[,Quantity:=sum(ScanCount),by=list(VisitNumber,DepartmentDescription)]
+ScanCount_by_Visit_DepartmentDescription_test = dcast(ScanCount_by_Visit_DepartmentDescription_test,VisitNumber~DepartmentDescription+Purchase_Ind)
+
+a=names(ScanCount_by_Visit_DepartmentDescription) %in% names(ScanCount_by_Visit_DepartmentDescription_test)
+b = names(ScanCount_by_Visit_DepartmentDescription)[!a]
+c=names(ScanCount_by_Visit_DepartmentDescription_test) %in% names(ScanCount_by_Visit_DepartmentDescription)
+d = names(ScanCount_by_Visit_DepartmentDescription_test)[!c]
+b
+d
+```
+
+let's look at records in Health and beauty aids records in train
+we will replace heal and beauty aids to beauty
+```{r}
+train[which(train$VisitNumber %in% c(train[which(train$DepartmentDescription == "HEALTH AND BEAUTY AIDS"),]$VisitNumber)),]
+```
+
+
+Fineline number is a more defined product category made by Walmart.
+```{r}
+FinelineNumber_by_Deparment<-subset(dt.train,select = c('FinelineNumber','DepartmentDescription'))
+FinelineNumber_by_Deparment<-FinelineNumber_by_Deparment[,Quantity:=length(unique(FinelineNumber)),by=list(DepartmentDescription),]
+```
+
+
+exaimne which transaction type exist in at
+```{r}
+xnam = c("ScanCount","Purchase_Ind","Weekday","TripType")
+d<-aggregate(ScanCount ~ ., data=train[, xnam], FUN=sum,order('ScantCount'))
+d = cast(d,DepartmentDescription~Purchase_Ind)
+d = d[with(d, order(-Purchase)), ]
+d[is.na(d)] <- 0
+d = Calculate_Purchase_Return_ratio(d)
+head(d,15)
+```
